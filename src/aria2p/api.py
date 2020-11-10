@@ -18,7 +18,6 @@ from aria2p.downloads import Download
 from aria2p.options import Options
 from aria2p.stats import Stats
 from aria2p.types import OperationResult, OptionsType, PathOrStr
-from aria2p.utils import read_lines
 
 
 class API:
@@ -55,6 +54,7 @@ class API:
         Arguments:
             uri: The URI or file-path to add.
 
+
         Returns:
             The created downloads.
         """
@@ -74,9 +74,8 @@ class API:
             elif path.suffix == ".metalink":
                 new_downloads.extend(self.add_metalink(path))
             else:
-                for line in read_lines(path):
-                    if line:
-                        new_downloads.extend(self.add(line))
+                new_downloads.extend(self.add_file(path))
+
         elif uri.startswith("magnet:?"):
             new_downloads.append(self.add_magnet(uri))
         else:
@@ -850,3 +849,106 @@ class API:
         if self.listener:
             self.listener.join()
         self.listener = None
+
+    def add_file(self, path: PathOrStr):
+
+        """
+        Add downloads from file or aria2 input file.
+
+        Arguments:
+            path: The file path.
+
+        Returns:
+            The list of Download objects with options.
+        """
+        files = []
+        downloads = []
+
+        try:
+            with open(path, "r") as stream:
+                line = stream.readline()
+
+                while line != "":
+
+                    if line.startswith("#") or line == "\n":
+                        line = stream.readline()
+                        continue
+
+                    if not line.startswith(" ") or not line.startswith("\t"):
+                        download_object = {}
+                        options = {}
+
+                        try:
+                            uri, download_options = line.rstrip().split("\t")[0], line.split("\t")[1:]
+                            if Path(uri).exists():
+
+                                # self.add(uri.rstrip())
+                                files.append(uri)
+                                line = stream.readline()
+
+                            # Try to parse tab delimited options
+                            if download_options:
+                                for download_option in download_options:
+                                    (option, value) = download_option.lstrip().rstrip("\n").split("=")
+                                    options.update({option: value})
+
+                                line = stream.readline()
+
+                            # Try to parse per line indented options
+                            else:
+                                uri = line.rstrip("\n")
+
+                                if Path(uri).exists():
+                                    # self.add(uri.rstrip())
+                                    files.append(uri)
+                                    line = stream.readline()
+                                    continue
+
+                                line = stream.readline()
+
+                                while (line.startswith(" ") or line.startswith("\t")) and not line.startswith("#"):
+
+                                    # check if indented line starts with a #
+                                    if line.lstrip().startswith("#"):
+                                        line = stream.readline()
+                                        continue
+
+                                    (option, value) = line.lstrip().rstrip("\n").split("=")
+                                    options.update({option: value})
+
+                                    line = stream.readline()
+
+                        except ValueError as error:
+                            logger.error(f"Cannot parse option '{line.rstrip()}'")
+                            logger.opt(exception=True).trace(error)
+                            ## raise
+
+                            # exit
+                            # print("\n unable to parse option line.strip('\n')\n")
+                            # sys.exit(1)
+
+                            ## Continue to read file
+                            line = stream.readline()
+                            continue
+
+                        download_object["uri"] = uri
+                        download_object["options"] = options
+                        downloads.append(download_object)
+
+            if not downloads:
+                return []
+
+            new_downloads = []
+
+            for file in files:
+                new_downloads.extend(self.add(file.strip()))
+
+            for download in downloads:
+                uri, options = download.get("uri", ""), download.get("options", {})
+                new_downloads.append(self.get_download(self.client.add_uri([uri], options)))
+
+            return new_downloads
+
+        except FileNotFoundError as error:
+            logger.warning(f"File '{path}' does not exist")
+            logger.opt(exception=True).trace(error)
